@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>kiokun</title>
+
+	<script type="module">
+		const dbOpenRequest = indexedDB.open('CedictDB', 1);
+
+		dbOpenRequest.onupgradeneeded = event => {
+			const db = event.target.result;
+			if (!db.objectStoreNames.contains('cedict')) {
+				db.createObjectStore('cedict', { keyPath: 't' });
+			}
+			// Check if the simplified index exists, if not, create it
+			const transaction = event.target.transaction;
+			const store = transaction.objectStore('cedict');
+			if (!store.indexNames.contains('simplified')) {
+				store.createIndex('simplified', 's', { unique: false });
+			}
+		};
+
+
+
+		dbOpenRequest.onerror = event => {
+			console.error('Database error:', event.target.error);
+		};
+		async function checkAndLoadData(db) {
+			return new Promise((resolve, reject) => {
+				const transaction = db.transaction('cedict', 'readonly');
+				const store = transaction.objectStore('cedict');
+				const countRequest = store.count();
+
+				countRequest.onsuccess = async () => {
+					if (countRequest.result === 0) {
+						const cedictModule = await import('./cedict.js');
+						const cedict = cedictModule.default;
+
+						const insertTransaction = db.transaction('cedict', 'readwrite');
+						const insertStore = insertTransaction.objectStore('cedict');
+						cedict.forEach(entry => {
+							insertStore.put({
+								t: entry.t,
+								s: entry.s || entry.t,
+								d: entry.d,
+								p: entry.p
+							});
+						});
+						insertTransaction.oncomplete = () => resolve();
+					} else {
+						resolve();
+					}
+				};
+
+				countRequest.onerror = () => reject();
+			});
+		}
+
+		dbOpenRequest.onsuccess = async event => {
+			const db = event.target.result;
+			await checkAndLoadData(db); // Wait for data to be checked and loaded
+			searchAndDisplayWord(db);   // Then perform the search
+		};
+		async function searchAndDisplayWord(db) {
+			const params = new URLSearchParams(window.location.search);
+			const query = params.get('q');
+
+			if (query) {
+				const transaction = db.transaction('cedict', 'readonly');
+				const store = transaction.objectStore('cedict');
+				let request = store.get(query);
+
+				request.onsuccess = () => {
+					const entry = request.result;
+					if (entry) {
+						displayWord(entry);
+					} else {
+						// If not found in traditional, search in simplified
+						searchSimplified(db, query);
+					}
+				};
+
+				request.onerror = () => {
+					displayNotFound(query);
+				};
+			}
+		}
+
+		function searchSimplified(db, query) {
+			const transaction = db.transaction('cedict', 'readonly');
+			const store = transaction.objectStore('cedict');
+			const index = store.index('simplified');
+			const request = index.get(query);
+
+			request.onsuccess = () => {
+				const entry = request.result;
+				if (entry) {
+					displayWord(entry);
+				} else {
+					displayNotFound(query);
+				}
+			};
+		}
+
+		function displayWord(entry) {
+			document.body.innerHTML = `<h1>${entry.t} (${entry.s})</h1>
+                                       <p>Pronunciation: ${entry.p}</p>
+                                       <p>Definitions: ${entry.d}</p>`;
+		}
+
+		function displayNotFound(query) {
+			document.body.innerHTML = `<p>No entry found for "${query}".</p>`;
+		}
+	</script>
+</head>
+
+<body>
+	<!-- Content will be displayed here -->
+</body>
+
+</html>
